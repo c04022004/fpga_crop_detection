@@ -237,7 +237,8 @@ void displayFrame() {
 void postProcess(DPUTask* task, Mat& frame, int sWidth, int sHeight){
 
     /*output nodes of YOLO-v3 */
-    const vector<string> outputs_node = {"layer81_conv", "layer93_conv", "layer105_conv"};
+    // const vector<string> outputs_node = {"layer81_conv", "layer93_conv", "layer105_conv"};
+    const vector<string> outputs_node = {"layer15_conv", "layer22_conv"};
 
     vector<vector<float>> boxes;
     for(size_t i = 0; i < outputs_node.size(); i++){
@@ -305,7 +306,8 @@ void postProcess(DPUTask* task, Mat& frame, int sWidth, int sHeight){
 vector<vector<float>> postProcessResults(DPUTask* task, Mat& frame, int sWidth, int sHeight){
 
     /*output nodes of YOLO-v3 */
-    const vector<string> outputs_node = {"layer81_conv", "layer93_conv", "layer105_conv"};
+    // const vector<string> outputs_node = {"layer81_conv", "layer93_conv", "layer105_conv"};
+    const vector<string> outputs_node = {"layer15_conv", "layer22_conv"};
 
     vector<vector<float>> boxes;
     for(size_t i = 0; i < outputs_node.size(); i++){
