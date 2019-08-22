@@ -77,8 +77,12 @@ void detect(vector<vector<float>> &boxes, vector<float> result,
 
 void detect(vector<vector<float>> &boxes, vector<float> result,
     int channel, int height, int width, int num, int sHeight, int sWidth) {
+    // anchors = 10,13,  16,30,  33,23,  30,61,  62,45,  59,119,  116,90,  156,198,  373,326
     // vector<float> biases{116,90, 156,198, 373,326, 30,61, 62,45, 59,119, 10,13, 16,30, 33,23};
-    vector<float> biases{81,82,  135,169, 344,319, 10,14, 23,27, 37,58};
+    // anchors = 10,14,  23,27,  37,58,  81,82,  135,169,  344,319
+    // vector<float> biases{81,82,  135,169, 344,319, 10,14, 23,27, 37,58};
+    // anchors = 30, 41,  58, 63,  84,113, 142, 82, 134,173, 224,136, 206,263, 303,219, 329,348
+    vector<float> biases{206,263, 303,219, 329,348, 142, 82, 134,173, 224,136, 30, 41,  58, 63,  84,113};
     int conf_box = 5 + classificationCnt;
     float swap[height * width][anchorCnt][conf_box];
 
