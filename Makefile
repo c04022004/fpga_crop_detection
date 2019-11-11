@@ -57,6 +57,7 @@ LDFLAGS   =   $(shell pkg-config --libs opencv)
 # linking libraries of DNNDK 
 LDFLAGS   +=  -lhineon -ln2cube -ldputils -lpthread
 
+
 CUR_DIR   =   $(shell pwd)
 SRC       =   $(CUR_DIR)/src
 BUILD     =   $(CUR_DIR)/build
@@ -68,6 +69,13 @@ ARCH      =   $(shell uname -m | sed -e s/arm.*/armv71/ \
 MODEL     =   $(CUR_DIR)/model/dpu_yolo.elf
 
 CFLAGS   :=   -O2 -Wall -Wpointer-arith -std=c++11 -ffast-math
+#CFLAGS   +=   -lm -ldl
+CFLAGS   +=   -L /opt/glibc-2.27/lib
+CFLAGS   +=   -I /opt/glibc-2.27/include
+#CFLAGS   +=   --sysroot=/opt/glibc-2.27
+CFLAGS   +=   -Wl,--rpath=/opt/glibc-2.27/lib
+CFLAGS   +=   -Wl,--dynamic-linker=/opt/glibc-2.27/lib/libc.so.6
+CFLAGS   +=   -Wl,--dynamic-linker=/opt/glibc-2.27/lib/ld-2.27.so
 ifeq ($(ARCH),armv71)
     CFLAGS +=  -mcpu=cortex-a9 -mfloat-abi=hard -mfpu=neon
 endif
