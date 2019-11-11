@@ -238,6 +238,9 @@ void postProcess(DPUTask* task, Mat& frame, int sWidth, int sHeight){
 
     /*output nodes of YOLO-v3 */
     const vector<string> outputs_node = {"layer81_conv", "layer93_conv", "layer105_conv"};
+    // const vector<string> outputs_node = {"layer15_conv", "layer22_conv"};
+    // const vector<string> outputs_node = {"layer15_conv", "layer22_conv", "layer29_conv"};
+    // const vector<string> outputs_node = {"layer14_conv", "layer21_conv", "layer28_conv"};
 
     vector<vector<float>> boxes;
     for(size_t i = 0; i < outputs_node.size(); i++){
@@ -306,6 +309,9 @@ vector<vector<float>> postProcessResults(DPUTask* task, Mat& frame, int sWidth, 
 
     /*output nodes of YOLO-v3 */
     const vector<string> outputs_node = {"layer81_conv", "layer93_conv", "layer105_conv"};
+    // const vector<string> outputs_node = {"layer15_conv", "layer22_conv"};
+    // const vector<string> outputs_node = {"layer15_conv", "layer22_conv", "layer29_conv"};
+    // const vector<string> outputs_node = {"layer14_conv", "layer21_conv", "layer28_conv"};
 
     vector<vector<float>> boxes;
     for(size_t i = 0; i < outputs_node.size(); i++){
@@ -342,7 +348,7 @@ vector<vector<float>> postProcessResults(DPUTask* task, Mat& frame, int sWidth, 
  * @brief Thread entry for running YOLO-v3 network on DPU for acceleration
  *
  * @param task - pointer to DPU task for running YOLO-v3
- * @param img 
+ * @param img
  *
  * @return none
  */
@@ -353,14 +359,19 @@ void runYOLO(DPUTask* task, Mat& img) {
     int height = dpuGetInputTensorHeight(task, INPUT_NODE);
     int width = dpuGetInputTensorWidth(task, INPUT_NODE);
 
-  
+
     /* feed input frame into DPU Task with mean value */
     setInputImageForYOLO(task, img, mean);
 
     /* invoke the running of DPU for YOLO-v3 with c++ timers*/
     auto start_time = chrono::system_clock::now();
-    dpuRunTask(task);
-    auto end_dpu_time = chrono::system_clock::now();
+    //for(int i=0;i<1000;i++){
+        dpuRunTask(task);
+        auto end_dpu_time = chrono::system_clock::now();
+        //duration<double> dpu_seconds = end_dpu_time - start_time;
+        //cout << "Time used:" << dpu_seconds.count() << "s" <<endl;
+        //start_time = end_dpu_time;
+    //}
     postProcess(task, img, width, height);
     auto end_cpu_time = chrono::system_clock::now();
     duration<double> dpu_seconds = end_dpu_time - start_time;
@@ -434,14 +445,13 @@ int main(const int argc, const char** argv) {
 
     string model;
     if (argc == 2) {
-        model = "i";   
+        model = "i";
     } else {
         model = argv[2];
     }
-   
-    
+
     if(model == "v"){
-  
+
         /* Attach to DPU driver and prepare for running */
         dpuOpen();
 
@@ -484,7 +494,7 @@ int main(const int argc, const char** argv) {
     return 0;
 
     } else if (model == "i") {
-        
+
         start_time = chrono::system_clock::now();
         dpuOpen();
         Mat img = imread(argv[1]);
@@ -507,9 +517,9 @@ int main(const int argc, const char** argv) {
         dpuClose();
 
         return 0;
-      
+
     } else if (model == "t") {
-    
+
         ifstream inputFile(argv[1]);
         vector<string> fileList;
         string line;
@@ -540,15 +550,22 @@ int main(const int argc, const char** argv) {
             fname.replace(fname.end()-4, fname.end(), ".txt");
             outfile.open(fname.c_str());
             cout << "Writing to file: " << fname.c_str() << endl;
-            
+
             /* mean values for YOLO-v3 */
             float mean[3] = {0.0f, 0.0f, 0.0f};
             int height = dpuGetInputTensorHeight(task, INPUT_NODE);
             int width = dpuGetInputTensorWidth(task, INPUT_NODE);
             setInputImageForYOLO(task, img, mean);
+            auto start_time = chrono::system_clock::now();
             dpuRunTask(task);
+            auto end_dpu_time = chrono::system_clock::now();
             vector<vector<float>> res = postProcessResults(task, img, width, height);
-            
+            auto end_cpu_time = chrono::system_clock::now();
+            duration<double> dpu_seconds = end_dpu_time - start_time;
+            duration<double> cpu_seconds = end_cpu_time - end_dpu_time;
+            cout << "DPU time: " << dpu_seconds.count() << "s" << endl;
+            cout << "CPU time: " << cpu_seconds.count() << "s" << endl;
+
             float h = img.rows;
             float w = img.cols;
             for(size_t i = 0; i < res.size(); ++i) {
@@ -556,7 +573,8 @@ int main(const int argc, const char** argv) {
                 float ymin = (res[i][1] - res[i][3]/2.0) * h + 1.0;
                 float xmax = (res[i][0] + res[i][2]/2.0) * w + 1.0;
                 float ymax = (res[i][1] + res[i][3]/2.0) * h + 1.0;
-            
+
+
                 if(res[i][res[i][4] + 6] > CONF ) {
 
                     // Results output
@@ -566,7 +584,7 @@ int main(const int argc, const char** argv) {
                     cout << fixed << setprecision(5) << res[i][type + 6];
                     cout << "\t" << type_names[type] << "\t";
                     cout << xmin << " " << ymin << " " << xmax << " " << ymax << endl;
-                    
+
                     // outfile << type_names[type] << " ";
                     outfile << type_names[type] << " ";
                     outfile << res[i][type + 6] << " ";
@@ -584,6 +602,10 @@ int main(const int argc, const char** argv) {
                 }
             }
             outfile.close();
+
+            // Save detection for review
+            fname.replace(fname.end()-4, fname.end(), ".jpg");
+            imwrite(fname.c_str(), img);
 
             // Show the images for inspection
             // imshow("Xilinx DPU", img);

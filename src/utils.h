@@ -15,8 +15,8 @@
 using namespace std;
 using namespace std::chrono;
 
-#define CONF 0.05
-#define NMS_THRESHOLD 0.05f
+#define CONF 0.8
+#define NMS_THRESHOLD 0.5f
 
 const int classificationCnt = 7;
 const int anchorCnt = 3;
@@ -77,7 +77,18 @@ void detect(vector<vector<float>> &boxes, vector<float> result,
 
 void detect(vector<vector<float>> &boxes, vector<float> result,
     int channel, int height, int width, int num, int sHeight, int sWidth) {
+    // v3-anchor 416x416
+    // anchors = 10,13,  16,30,  33,23,  30,61,  62,45,  59,119,  116,90,  156,198,  373,326
     vector<float> biases{116,90, 156,198, 373,326, 30,61, 62,45, 59,119, 10,13, 16,30, 33,23};
+
+    // v3-anchor 608x608
+    // anchors = 4,7, 7,15, 13,25,   25,42, 41,67, 75,94,   91,162, 158,205, 250,332
+    // vector<float> biases{91,162, 158,205, 250,332,  25,42, 41,67, 75,94,  4,7, 7,15, 13,25};
+    
+    // tiny-custom-anchor 416x416
+    // anchors =  35, 46,  79, 87, 110,147, 183,107, 162,210, 271,171, 235,291, 319,249, 344,366
+    // vector<float> biases{235,291, 319,249, 344,366,  183,107, 162,210, 271,171,  35,46, 79,87, 110,147};
+
     int conf_box = 5 + classificationCnt;
     float swap[height * width][anchorCnt][conf_box];
 
