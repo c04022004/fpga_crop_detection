@@ -63,6 +63,7 @@
 #include <thread>
 #include <sys/stat.h>
 #include <dirent.h>
+#include <sys/time.h>
 
 #include <dnndk/dnndk.h>
 
@@ -79,7 +80,7 @@ using namespace std::chrono;
 int idxInputImage = 0;  // frame index of input video
 int idxShowImage = 0;   // next frame index to be displayed
 bool bReading = true;   // flag of reding input frame
-chrono::system_clock::time_point start_time;
+chrono::system_clock::time_point start_time,end_time;
 
 typedef pair<int, Mat> imagePair;
 class paircomp {
@@ -276,7 +277,7 @@ void postProcess(DPUTask* task, Mat& frame, int sWidth, int sHeight){
         float ymin = (res[i][1] - res[i][3]/2.0) * h + 1.0;
         float xmax = (res[i][0] + res[i][2]/2.0) * w + 1.0;
         float ymax = (res[i][1] + res[i][3]/2.0) * h + 1.0;
-	
+
         if(res[i][res[i][4] + 6] > CONF ) {
 
             // Sanity Check
@@ -361,17 +362,23 @@ void runYOLO(DPUTask* task, Mat& img) {
 
 
     /* feed input frame into DPU Task with mean value */
+    start_time = chrono::system_clock::now();
     setInputImageForYOLO(task, img, mean);
+    end_time = chrono::system_clock::now();
+    cout << "setInputImageForYOLO(): " << ((duration<double>)(end_time-start_time)).count() << "s" << endl;
 
     /* invoke the running of DPU for YOLO-v3 with c++ timers*/
+    // tesing loop
+    // for(int i=0;i<1000;i++){
+    //     struct timeval stop, start;
+    //     gettimeofday(&start, NULL);
+    //     dpuRunTask(task);
+    //     gettimeofday(&stop, NULL);
+    //     printf("took %lu us\n", (stop.tv_sec - start.tv_sec) * 1000000 + stop.tv_usec - start.tv_usec); 
+    // }
     auto start_time = chrono::system_clock::now();
-    //for(int i=0;i<1000;i++){
-        dpuRunTask(task);
-        auto end_dpu_time = chrono::system_clock::now();
-        //duration<double> dpu_seconds = end_dpu_time - start_time;
-        //cout << "Time used:" << dpu_seconds.count() << "s" <<endl;
-        //start_time = end_dpu_time;
-    //}
+    dpuRunTask(task);
+    auto end_dpu_time = chrono::system_clock::now();
     postProcess(task, img, width, height);
     auto end_cpu_time = chrono::system_clock::now();
     duration<double> dpu_seconds = end_dpu_time - start_time;
@@ -497,13 +504,28 @@ int main(const int argc, const char** argv) {
 
         start_time = chrono::system_clock::now();
         dpuOpen();
+        end_time = chrono::system_clock::now();
+        cout << "dpuOpen(): " << ((duration<double>)(end_time-start_time)).count() << "s" << endl;
+
+        start_time = chrono::system_clock::now();
         Mat img = imread(argv[1]);
+        end_time = chrono::system_clock::now();
+        cout << "imread(): " << ((duration<double>)(end_time-start_time)).count() << "s" << endl;
+
+        start_time = chrono::system_clock::now();
         DPUKernel *kernel = dpuLoadKernel("yolo");
+        end_time = chrono::system_clock::now();
+        cout << "dpuLoadKernel(): " << ((duration<double>)(end_time-start_time)).count() << "s" << endl;
+
+        start_time = chrono::system_clock::now();
         DPUTask* task = dpuCreateTask(kernel, 0);
+        end_time = chrono::system_clock::now();
+        cout << "dpuCreateTask(): " << ((duration<double>)(end_time-start_time)).count() << "s" << endl;
+
+        start_time = chrono::system_clock::now();
         runYOLO(task, img);
-        auto end_time = chrono::system_clock::now();
-        duration<double> elapsed_seconds = end_time - start_time;
-        cout << "Total elapsed time (with OpenCV): " << elapsed_seconds.count() << "s" << endl;
+        end_time = chrono::system_clock::now();
+        cout << "runYOLO(): " << ((duration<double>)(end_time-start_time)).count() << "s" << endl;
 
         imwrite("result.jpg", img);
         imshow("Xilinx DPU", img);
@@ -541,9 +563,12 @@ int main(const int argc, const char** argv) {
         vector<string>::const_iterator it(fileList.begin());
         vector<string>::const_iterator end(fileList.end());
         for(;it != end;++it) {
-            start_time = chrono::system_clock::now();
             cout << "Start processing " << *it << endl;
+            
+            start_time = chrono::system_clock::now();
             Mat img = imread(it->c_str());
+            end_time = chrono::system_clock::now();
+            cout << "imread(): " << ((duration<double>)(end_time-start_time)).count() << "s" << endl;
 
             ofstream outfile;
             string fname = *it;
@@ -551,11 +576,15 @@ int main(const int argc, const char** argv) {
             outfile.open(fname.c_str());
             cout << "Writing to file: " << fname.c_str() << endl;
 
+            start_time = chrono::system_clock::now();
             /* mean values for YOLO-v3 */
             float mean[3] = {0.0f, 0.0f, 0.0f};
             int height = dpuGetInputTensorHeight(task, INPUT_NODE);
             int width = dpuGetInputTensorWidth(task, INPUT_NODE);
             setInputImageForYOLO(task, img, mean);
+            end_time = chrono::system_clock::now();
+            cout << "setInputImageForYOLO(): " << ((duration<double>)(end_time-start_time)).count() << "s" << endl;
+
             auto start_time = chrono::system_clock::now();
             dpuRunTask(task);
             auto end_dpu_time = chrono::system_clock::now();
@@ -620,9 +649,9 @@ int main(const int argc, const char** argv) {
         dpuClose();
 
         return 0;
-    
+
     } else {
-        cout << "unknow type !"<<endl;    
+        cout << "unknow type !"<<endl;
         cout << "Usage of this exe: ./yolo image_name[string]" << endl;
         cout << "Usage of this exe: ./yolo image_name[string] i" << endl;
         cout << "Usage of this exe: ./yolo image_list[string] t"<< endl;
@@ -630,8 +659,6 @@ int main(const int argc, const char** argv) {
 
         return -1;
     }
-    
-     
 
-    
+
 }
