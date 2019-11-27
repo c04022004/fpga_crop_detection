@@ -76,6 +76,7 @@ using namespace std::chrono;
 
 
 #define INPUT_NODE "layer0_conv"
+#define NUM_YOLO_THREAD 16
 
 int idxInputImage = 0;  // frame index of input video
 int idxShowImage = 0;   // next frame index to be displayed
@@ -150,37 +151,55 @@ void setInputImageForYOLO(DPUTask* task, const Mat& frame, float* mean) {
  * @return none
  */
 void readFrame(const char *fileName) {
-    static int loop = 3;
-    VideoCapture video;
-    string videoFile = fileName;
-    start_time = chrono::system_clock::now();
 
+    static int loop = 3;
+
+    ifstream inputFile(fileName);
+    if(!inputFile) {
+        cout << "File list could not be opened\n";
+        exit(-1);
+    }
+    vector<string> fileList;
+    string line;
+    while(getline(inputFile, line)) {
+        fileList.push_back(line);
+    }
+    cout << "Number of files to be analyzed: " << fileList.size() << "\n";
+
+    vector<string>::const_iterator it(fileList.begin());
+    vector<string>::const_iterator end(fileList.end());
+
+    // Playing around with the lock to fill the buffer first
+    bool init = false;
+    mtxQueueInput.lock();
+    start_time = chrono::system_clock::now();
+    
     while (loop>0) {
         loop--;
-        if (!video.open(videoFile)) {
-            cout<<"Fail to open specified video file:" << videoFile << endl;
-            exit(-1);
-        }
 
         while (true) {
-            usleep(20000);
             Mat img;
-            if (queueInput.size() < 30) {
-                if (!video.read(img) ) {
-                    break;
-                }
+            if(queueInput.size()<400 && it!=end){
+                img = imread(it->c_str());
+                if(!img.data){break;}else{++it;}
 
-                mtxQueueInput.lock();
+                if(init){
+                    mtxQueueInput.lock();
+                }
                 queueInput.push(make_pair(idxInputImage++, img));
+                if(init){
+                    mtxQueueInput.unlock();
+                }
+            }else if(!init){
                 mtxQueueInput.unlock();
-            } else {
+                init = true;
+                start_time = chrono::system_clock::now();
+            }else{
                 usleep(10);
             }
+            cout << "Queue size: " << queueInput.size() << endl;
         }
-
-        video.release();
     }
-
     exit(0);
 }
 
@@ -189,7 +208,6 @@ void readFrame(const char *fileName) {
  *
  * @param  none
  * @return none
- *
  */
 void displayFrame() {
     Mat frame;
@@ -209,8 +227,10 @@ void displayFrame() {
             buffer << fixed << setprecision(1)
                    << (float)queueShow.top().first / (dura / 1000000.f);
             string a = buffer.str() + " FPS";
+            cout << a << endl;
             cv::putText(frame, a, cv::Point(10, 15), 1, 1, cv::Scalar{240, 240, 240},1);
-            cv::imshow("Yolo@Xilinx DPU", frame);
+            // cv::imshow("Yolo@Xilinx DPU", frame);
+            // cv::imwrite(fname.c_str(), img);
 
             idxShowImage++;
             queueShow.pop();
@@ -224,6 +244,7 @@ void displayFrame() {
         }
     }
 }
+
 
 /**
  * @brief Post process after the runing of DPU for YOLO-v3 network
@@ -443,10 +464,10 @@ void runYOLO_video(DPUTask* task) {
 int main(const int argc, const char** argv) {
 
     if (argc == 1 || argc > 3 ) {
-        cout << "Usage of this exe: ./yolo image_name[string]" << endl;
+        cout << "Usage of this exe: ./yolo image_name[string]"   << endl;
         cout << "Usage of this exe: ./yolo image_name[string] i" << endl;
-        cout << "Usage of this exe: ./yolo image_list[string] t"<< endl;
-        cout << "Usage of this exe: ./yolo video_name[string] v"<< endl;
+        cout << "Usage of this exe: ./yolo image_list[string] t" << endl;
+        cout << "Usage of this exe: ./yolo image_list[string] p" << endl;
         return -1;
     }
 
@@ -457,48 +478,59 @@ int main(const int argc, const char** argv) {
         model = argv[2];
     }
 
-    if(model == "v"){
+    if(model == "p"){
 
         /* Attach to DPU driver and prepare for running */
         dpuOpen();
 
         /* Load DPU Kernels for YOLO-v3 network model */
         DPUKernel *kernel = dpuLoadKernel("yolo");
-        vector<DPUTask *> task(4);
 
-        /* Create 4 DPU Tasks for YOLO-v3 network model */
+        /* Create n DPU Tasks for YOLO-v3 network model */
+        vector<DPUTask *> task(NUM_YOLO_THREAD);
         generate(task.begin(), task.end(),
         std::bind(dpuCreateTask, kernel, 0));
 
-        /* Spawn 6 threads:
+        /* Spawn n+2 threads:
         - 1 thread for reading video frame
-        - 4 identical threads for running YOLO-v3 network model
+        - n identical threads for running YOLO-v3 network model
         - 1 thread for displaying frame in monitor
         */
-        array<thread, 6> threadsList = {
-        thread(readFrame, argv[1]),
-        thread(displayFrame),
-        thread(runYOLO_video, task[0]),
-        thread(runYOLO_video, task[1]),
-        thread(runYOLO_video, task[2]),
-        thread(runYOLO_video, task[3]),
+        array<thread, (NUM_YOLO_THREAD+2)> threadsList = {
+            thread(readFrame, argv[1]),
+            thread(displayFrame),
+            thread(runYOLO_video, task[0]),
+            thread(runYOLO_video, task[1]),
+            thread(runYOLO_video, task[2]),
+            thread(runYOLO_video, task[3]),
+            thread(runYOLO_video, task[4]),
+            thread(runYOLO_video, task[5]),
+            thread(runYOLO_video, task[6]),
+            thread(runYOLO_video, task[7]),
+            thread(runYOLO_video, task[8]),
+            thread(runYOLO_video, task[9]),
+            thread(runYOLO_video, task[10]),
+            thread(runYOLO_video, task[11]),
+            thread(runYOLO_video, task[12]),
+            thread(runYOLO_video, task[13]),
+            thread(runYOLO_video, task[14]),
+            thread(runYOLO_video, task[15]),
+        };
 
-    };
+        for (int i = 0; i < NUM_YOLO_THREAD+2; i++) {
+            threadsList[i].join();
+        }
 
-    for (int i = 0; i < 6; i++) {
-        threadsList[i].join();
-    }
+        /* Destroy DPU Tasks & free resources */
+        for_each(task.begin(), task.end(), dpuDestroyTask);
 
-    /* Destroy DPU Tasks & free resources */
-    for_each(task.begin(), task.end(), dpuDestroyTask);
+        /* Destroy DPU Kernels & free resources */
+        dpuDestroyKernel(kernel);
 
-    /* Destroy DPU Kernels & free resources */
-    dpuDestroyKernel(kernel);
+        /* Dettach from DPU driver & free resources */
+        dpuClose();
 
-    /* Dettach from DPU driver & free resources */
-    dpuClose();
-
-    return 0;
+        return 0;
 
     } else if (model == "i") {
 
@@ -633,8 +665,8 @@ int main(const int argc, const char** argv) {
             outfile.close();
 
             // Save detection for review
-            fname.replace(fname.end()-4, fname.end(), ".jpg");
-            imwrite(fname.c_str(), img);
+            // fname.replace(fname.end()-4, fname.end(), ".jpg");
+            // imwrite(fname.c_str(), img);
 
             // Show the images for inspection
             // imshow("Xilinx DPU", img);
