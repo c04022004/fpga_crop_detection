@@ -76,12 +76,20 @@ using namespace std::chrono;
 
 
 #define INPUT_NODE "layer0_conv"
-#define NUM_YOLO_THREAD 16
+#define NUM_YOLO_THREAD 1
 
 int idxInputImage = 0;  // frame index of input video
 int idxShowImage = 0;   // next frame index to be displayed
 bool bReading = true;   // flag of reding input frame
+
+// Performance Metrics
 chrono::system_clock::time_point start_time,end_time;
+// typedef pair<int, chrono::system_clock::time_point> timePair;
+// vector<timePair> in_pair;
+// vector<timePair> out_pair;
+// bool tpaircomp (const timePair &n1, const timePair &n2) {
+//     return (n1.first > n2.first);
+// }
 
 typedef pair<int, Mat> imagePair;
 class paircomp {
@@ -179,25 +187,23 @@ void readFrame(const char *fileName) {
 
         while (true) {
             Mat img;
-            if(queueInput.size()<400 && it!=end){
+            if(queueInput.size()<600 && it!=end){
                 img = imread(it->c_str());
                 if(!img.data){break;}else{++it;}
-
-                if(init){
-                    mtxQueueInput.lock();
-                }
+                if(init){mtxQueueInput.lock();}
                 queueInput.push(make_pair(idxInputImage++, img));
-                if(init){
-                    mtxQueueInput.unlock();
-                }
+                if(init){mtxQueueInput.unlock();}
+                cout << "Queue size: " << queueInput.size() << endl;
             }else if(!init){
                 mtxQueueInput.unlock();
                 init = true;
                 start_time = chrono::system_clock::now();
+            }else if(it==end){
+                bReading = false;
+                return;
             }else{
                 usleep(10);
             }
-            cout << "Queue size: " << queueInput.size() << endl;
         }
     }
     exit(0);
@@ -217,6 +223,7 @@ void displayFrame() {
 
         if (queueShow.empty()) {
             mtxQueueShow.unlock();
+            if(bReading){continue;}else{break;}
             usleep(10);
         } else if (idxShowImage == queueShow.top().first) {
             auto show_time = chrono::system_clock::now();
@@ -235,10 +242,10 @@ void displayFrame() {
             idxShowImage++;
             queueShow.pop();
             mtxQueueShow.unlock();
-            if (waitKey(1) == 'q') {
-                bReading = false;
-                exit(0);
-            }
+            // if (waitKey(1) == 'q') {
+            //     bReading = false;
+            //     exit(0);
+            // }
         } else {
             mtxQueueShow.unlock();
         }
@@ -288,7 +295,7 @@ void postProcess(DPUTask* task, Mat& frame, int sWidth, int sHeight){
     correct_region_boxes(boxes, boxes.size(), frame.cols, frame.rows, sWidth, sHeight);
 
     /* Apply the computation for NMS */
-    cout << "boxes size: " << boxes.size() << endl;
+    // cout << "boxes size: " << boxes.size() << endl;
     vector<vector<float>> res = applyNMS(boxes, classificationCnt, NMS_THRESHOLD);
 
     float h = frame.rows;
@@ -310,9 +317,9 @@ void postProcess(DPUTask* task, Mat& frame, int sWidth, int sHeight){
             int type = res[i][4];  // result of classification
             string type_names[7] = {"Broccoli","Cauliflower","Spectralon_15%", "Spectralon_30%",
                     "Spectralon_60%", "ColorChecker_C", "ColorChecker_Gy"}; // as in lady.names
-            cout << fixed << setprecision(5) << res[i][type + 6];
-            cout<<"\t"<<type_names[type]<<"\t";
-            cout<<xmin<<" "<<ymin<<" "<<xmax<<" "<<ymax<<endl;
+            // cout << fixed << setprecision(5) << res[i][type + 6];
+            // cout<<"\t"<<type_names[type]<<"\t";
+            // cout<<xmin<<" "<<ymin<<" "<<xmax<<" "<<ymax<<endl;
 
             // Mark the detction results on the image with OpenCV
             // Scalar(a,b,c)  We would be defining a BGR color such as: Blue=a, Green=b and Red=c
@@ -429,29 +436,38 @@ void runYOLO_video(DPUTask* task) {
         mtxQueueInput.lock();
         if (queueInput.empty()) {
             mtxQueueInput.unlock();
-            if (bReading)
-            {
-                continue;
-            } else {
-                break;
-            }
+            if(bReading){continue;}else{break;}
         } else {
             /* get an input frame from input frames queue */
             pairIndexImage = queueInput.front();
             queueInput.pop();
             mtxQueueInput.unlock();
         }
+        // cout << "Queue size: " << queueInput.size() << endl;
+        // in_pair.push_back(make_pair(pairIndexImage.first, chrono::system_clock::now()));
+        chrono::system_clock::time_point start_pipe, end_pile;
+
         vector<vector<float>> res;
         /* feed input frame into DPU Task with mean value */
+        start_pipe = chrono::system_clock::now();
         setInputImageForYOLO(task, pairIndexImage.second, mean);
 
         /* invoke the running of DPU for YOLO-v3 */
         dpuRunTask(task);
 
+        // testing loop for max load
+        // for(int i=0; i<100; i++){
+        //     dpuRunTask(task);
+        // }
+
         postProcess(task, pairIndexImage.second, width, height);
-        mtxQueueShow.lock();
+        // out_pair.push_back(make_pair(pairIndexImage.first, chrono::system_clock::now()));
+        end_pile = chrono::system_clock::now();
+        cout << pairIndexImage.first << " ";
+        cout << ((duration<double>)(end_pile-start_pipe)).count() << "s" << endl;
 
         /* push the image into display frame queue */
+        mtxQueueShow.lock();
         queueShow.push(pairIndexImage);
         mtxQueueShow.unlock();
     }
@@ -500,21 +516,21 @@ int main(const int argc, const char** argv) {
             thread(readFrame, argv[1]),
             thread(displayFrame),
             thread(runYOLO_video, task[0]),
-            thread(runYOLO_video, task[1]),
-            thread(runYOLO_video, task[2]),
-            thread(runYOLO_video, task[3]),
-            thread(runYOLO_video, task[4]),
-            thread(runYOLO_video, task[5]),
-            thread(runYOLO_video, task[6]),
-            thread(runYOLO_video, task[7]),
-            thread(runYOLO_video, task[8]),
-            thread(runYOLO_video, task[9]),
-            thread(runYOLO_video, task[10]),
-            thread(runYOLO_video, task[11]),
-            thread(runYOLO_video, task[12]),
-            thread(runYOLO_video, task[13]),
-            thread(runYOLO_video, task[14]),
-            thread(runYOLO_video, task[15]),
+            // thread(runYOLO_video, task[1]),
+            // thread(runYOLO_video, task[2]),
+            // thread(runYOLO_video, task[3]),
+            // thread(runYOLO_video, task[4]),
+            // thread(runYOLO_video, task[5]),
+            // thread(runYOLO_video, task[6]),
+            // thread(runYOLO_video, task[7]),
+            // thread(runYOLO_video, task[8]),
+            // thread(runYOLO_video, task[9]),
+            // thread(runYOLO_video, task[10]),
+            // thread(runYOLO_video, task[11]),
+            // thread(runYOLO_video, task[12]),
+            // thread(runYOLO_video, task[13]),
+            // thread(runYOLO_video, task[14]),
+            // thread(runYOLO_video, task[15]),
         };
 
         for (int i = 0; i < NUM_YOLO_THREAD+2; i++) {
@@ -530,6 +546,22 @@ int main(const int argc, const char** argv) {
         /* Dettach from DPU driver & free resources */
         dpuClose();
 
+        // cout << "Calculating latency results..." << endl;
+        // sort(in_pair.begin(), in_pair.end(), tpaircomp);
+        // sort(out_pair.begin(), out_pair.end(), tpaircomp);
+        // vector<timePair>::const_iterator in_it(in_pair.begin());
+        // vector<timePair>::const_iterator in_ed(in_pair.end());
+        // vector<timePair>::const_iterator out_it(out_pair.begin());
+        // vector<timePair>::const_iterator out_ed(out_pair.end());
+        // if(in_pair.size()!=out_pair.size()){
+        //     cout << "vector size not match!!" << endl;
+        // }
+        // while(in_it!=in_ed){
+        //     cout << in_it->first << " " << out_it->first << " ";
+        //     cout << ((duration<double>)(out_it->second-in_it->second)).count() << "s" << endl;
+        //     ++in_it;++out_it;
+        // }
+        
         return 0;
 
     } else if (model == "i") {
