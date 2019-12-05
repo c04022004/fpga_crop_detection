@@ -77,10 +77,10 @@ using namespace std::chrono;
 
 #define INPUT_NODE "layer0_conv"
 
+#define NUM_YOLO_THREAD 1
 #define DPU_0
-#define DPU_1
-#define DPU_2
-#define NUM_YOLO_THREAD 6
+// #define DPU_1
+// #define DPU_2
 
 int idxInputImage = 0;  // frame index of input video
 int idxShowImage = 0;   // next frame index to be displayed
@@ -117,10 +117,13 @@ queue<pair<int, Mat>> queueInput;
 priority_queue<imagePair, vector<imagePair>, paircomp> queueShow;
 
 typedef pair<int, DPUTask*> taskPair;
-mutex mtxResize[3];
-queue<taskPair> queueResize[3];
-bool bInfer[3] = {1,1,1,};   // flag of reding input frame
-DPUKernel *kernel=NULL;
+mutex mtxResize[NUM_YOLO_THREAD];
+queue<taskPair> queueResize[NUM_YOLO_THREAD];
+bool bInfer[NUM_YOLO_THREAD];
+
+mutex mtxTaskPool;
+queue<DPUTask*> queueTaskPool;
+DPUTask* tasks[NUM_YOLO_THREAD*2];
 
 /**
  * @brief Feed input frame into DPU for process
@@ -504,10 +507,23 @@ void yolo_p1(int ch) {
             queueInput.pop();
             mtxQueueInput.unlock();
         }
+        
+        DPUTask* task = NULL;
+        while(true){
+            mtxTaskPool.lock();
+            if (queueTaskPool.empty()) {
+                mtxTaskPool.unlock();
+                usleep(10);
+                continue;
+            }
+            task = queueTaskPool.front();
+            queueTaskPool.pop();
+            mtxTaskPool.unlock();
+            break;
+        }
+
         // cout << "Queue size: " << queueInput.size() << endl;
         chrono::system_clock::time_point start_pipe, end_pipe;
-
-        DPUTask* task = dpuCreateTask(kernel, 0);
         start_pipe = chrono::system_clock::now();
         setInputImageForYOLO(task, pairIndexImage.second, mean);
         end_pipe = chrono::system_clock::now();
@@ -542,7 +558,11 @@ void yolo_p2(int ch) {
         end_pipe = chrono::system_clock::now();
         cout << "inf: " << pairIndexTask.first << " " << ((duration<double>)(end_pipe-start_pipe)).count() << "s" << endl;
         out_pair.push_back(make_pair(pairIndexTask.first,end_pipe));
-        dpuDestroyTask(pairIndexTask.second);
+
+        // recycle task struct
+        mtxTaskPool.lock();
+        queueTaskPool.push(pairIndexTask.second);
+        mtxTaskPool.unlock();
     }
 }
 
@@ -573,19 +593,27 @@ int main(const int argc, const char** argv) {
         dpuOpen();
 
         /* Load DPU Kernels for YOLO-v3 network model */
-        kernel = dpuLoadKernel("yolo");
+        DPUKernel *kernel = dpuLoadKernel("yolo");
 
         /* Create n DPU Tasks for YOLO-v3 network model */
         // vector<DPUTask *> task(NUM_YOLO_THREAD);
         // generate(task.begin(), task.end(),
         // std::bind(dpuCreateTask, kernel, 0));
+        for(int i=0; i<NUM_YOLO_THREAD*2; i++){
+            tasks[i] = dpuCreateTask(kernel, 0);
+            queueTaskPool.push(tasks[i]);
+        }
+
+        for(int i=0; i<NUM_YOLO_THREAD; i++){
+            bInfer[i] = true;
+        }
 
         /* Spawn n+2 threads:
         - 1 thread for reading video frame
         - n identical threads for running YOLO-v3 network model
         - 1 thread for displaying frame in monitor
         */
-        array<thread, (NUM_YOLO_THREAD+2)> threadsList = {
+        array<thread, (NUM_YOLO_THREAD*2+2)> threadsList = {
             thread(readFrame, argv[1]),
             thread(displayFrame),
             // thread(runYOLO_video, task[0]),
@@ -603,7 +631,7 @@ int main(const int argc, const char** argv) {
             #endif
         };
 
-        for (int i = 0; i < NUM_YOLO_THREAD+2; i++) {
+        for (int i = 0; i < NUM_YOLO_THREAD*2+2; i++) {
             threadsList[i].join();
         }
 
@@ -613,6 +641,9 @@ int main(const int argc, const char** argv) {
 
         /* Destroy DPU Tasks & free resources */
         // for_each(task.begin(), task.end(), dpuDestroyTask);
+        for(int i=0; i<NUM_YOLO_THREAD*2; i++){
+            dpuDestroyTask(tasks[i]);
+        }
 
         /* Destroy DPU Kernels & free resources */
         dpuDestroyKernel(kernel);
