@@ -76,7 +76,11 @@ using namespace std::chrono;
 
 
 #define INPUT_NODE "layer0_conv"
-#define NUM_YOLO_THREAD 1
+
+#define DPU_0
+#define DPU_1
+#define DPU_2
+#define NUM_YOLO_THREAD 6
 
 int idxInputImage = 0;  // frame index of input video
 int idxShowImage = 0;   // next frame index to be displayed
@@ -84,12 +88,12 @@ bool bReading = true;   // flag of reding input frame
 
 // Performance Metrics
 chrono::system_clock::time_point start_time,end_time;
-// typedef pair<int, chrono::system_clock::time_point> timePair;
-// vector<timePair> in_pair;
-// vector<timePair> out_pair;
-// bool tpaircomp (const timePair &n1, const timePair &n2) {
-//     return (n1.first > n2.first);
-// }
+typedef pair<int, chrono::system_clock::time_point> timePair;
+vector<timePair> in_pair;
+vector<timePair> out_pair;
+bool tpaircomp (const timePair &n1, const timePair &n2) {
+    return (n1.first > n2.first);
+}
 
 typedef pair<int, Mat> imagePair;
 class paircomp {
@@ -111,6 +115,12 @@ mutex mtxQueueShow;
 queue<pair<int, Mat>> queueInput;
 // display frames queue
 priority_queue<imagePair, vector<imagePair>, paircomp> queueShow;
+
+typedef pair<int, DPUTask*> taskPair;
+mutex mtxResize[3];
+queue<taskPair> queueResize[3];
+bool bInfer[3] = {1,1,1,};   // flag of reding input frame
+DPUKernel *kernel=NULL;
 
 /**
  * @brief Feed input frame into DPU for process
@@ -187,7 +197,7 @@ void readFrame(const char *fileName) {
 
         while (true) {
             Mat img;
-            if(queueInput.size()<600 && it!=end){
+            if(queueInput.size()<13*100 && it!=end){
                 img = imread(it->c_str());
                 if(!img.data){break;}else{++it;}
                 if(init){mtxQueueInput.lock();}
@@ -216,6 +226,7 @@ void readFrame(const char *fileName) {
  * @return none
  */
 void displayFrame() {
+    return;
     Mat frame;
 
     while (true) {
@@ -223,19 +234,18 @@ void displayFrame() {
 
         if (queueShow.empty()) {
             mtxQueueShow.unlock();
-            if(bReading){continue;}else{break;}
-            usleep(10);
+            if(bReading){usleep(10);continue;}else{break;}
         } else if (idxShowImage == queueShow.top().first) {
             auto show_time = chrono::system_clock::now();
             stringstream buffer;
-            frame = queueShow.top().second;
+            // frame = queueShow.top().second;
 
             auto dura = (duration_cast<microseconds>(show_time - start_time)).count();
             buffer << fixed << setprecision(1)
                    << (float)queueShow.top().first / (dura / 1000000.f);
             string a = buffer.str() + " FPS";
             cout << a << endl;
-            cv::putText(frame, a, cv::Point(10, 15), 1, 1, cv::Scalar{240, 240, 240},1);
+            // cv::putText(frame, a, cv::Point(10, 15), 1, 1, cv::Scalar{240, 240, 240},1);
             // cv::imshow("Yolo@Xilinx DPU", frame);
             // cv::imwrite(fname.c_str(), img);
 
@@ -334,6 +344,67 @@ void postProcess(DPUTask* task, Mat& frame, int sWidth, int sHeight){
     }
 }
 
+void postProcess(DPUTask* task){
+
+    /*output nodes of YOLO-v3 */
+    const vector<string> outputs_node = {"layer81_conv", "layer93_conv", "layer105_conv"};
+    // const vector<string> outputs_node = {"layer15_conv", "layer22_conv"};
+    // const vector<string> outputs_node = {"layer15_conv", "layer22_conv", "layer29_conv"};
+    // const vector<string> outputs_node = {"layer14_conv", "layer21_conv", "layer28_conv"};
+
+    vector<vector<float>> boxes;
+    for(size_t i = 0; i < outputs_node.size(); i++){
+        string output_node = outputs_node[i];
+        int channel = dpuGetOutputTensorChannel(task, output_node.c_str());
+        int width = dpuGetOutputTensorWidth(task, output_node.c_str());
+        int height = dpuGetOutputTensorHeight(task, output_node.c_str());
+
+        int sizeOut = dpuGetOutputTensorSize(task, output_node.c_str());
+        int8_t* dpuOut = dpuGetOutputTensorAddress(task, output_node.c_str());
+        float scale = dpuGetOutputTensorScale(task, output_node.c_str());
+        vector<float> result(sizeOut);
+        boxes.reserve(sizeOut);
+
+        /* Store every output node results */
+        get_output(dpuOut, sizeOut, scale, channel, height, width, result);
+
+        /* Store the object detection frames as coordinate information  */
+        detect(boxes, result, channel, height, width, i, 416, 416);
+    }
+
+    /* Restore the correct coordinate frame of the original image */
+    correct_region_boxes(boxes, boxes.size(), 848, 565, 416, 416);
+
+    /* Apply the computation for NMS */
+    // cout << "boxes size: " << boxes.size() << endl;
+    vector<vector<float>> res = applyNMS(boxes, classificationCnt, NMS_THRESHOLD);
+
+    float h = 565;
+    float w = 848;
+    for(size_t i = 0; i < res.size(); ++i) {
+        float xmin = (res[i][0] - res[i][2]/2.0) * w + 1.0;
+        float ymin = (res[i][1] - res[i][3]/2.0) * h + 1.0;
+        float xmax = (res[i][0] + res[i][2]/2.0) * w + 1.0;
+        float ymax = (res[i][1] + res[i][3]/2.0) * h + 1.0;
+
+        if(res[i][res[i][4] + 6] > CONF ) {
+
+            // Sanity Check
+            if ( (xmin<0&&xmax<0) || (xmin>w&&xmax>w) || (ymin<0&&ymax<0) || (ymin>h&&ymax>h)){
+                continue;
+            }
+
+            // Results output
+            int type = res[i][4];  // result of classification
+            string type_names[7] = {"Broccoli","Cauliflower","Spectralon_15%", "Spectralon_30%",
+                    "Spectralon_60%", "ColorChecker_C", "ColorChecker_Gy"}; // as in lady.names
+            // cout << fixed << setprecision(5) << res[i][type + 6];
+            // cout<<"\t"<<type_names[type]<<"\t";
+            // cout<<xmin<<" "<<ymin<<" "<<xmax<<" "<<ymax<<endl;
+        }
+    }
+}
+
 vector<vector<float>> postProcessResults(DPUTask* task, Mat& frame, int sWidth, int sHeight){
 
     /*output nodes of YOLO-v3 */
@@ -416,19 +487,9 @@ void runYOLO(DPUTask* task, Mat& img) {
 }
 
 
-/**
- * @brief Thread entry for running YOLO-v3 network on DPU for acceleration
- *
- * @param task - pointer to DPU task for running YOLO-v3
- *
- * @return none
- */
-void runYOLO_video(DPUTask* task) {
+void yolo_p1(int ch) {
     /* mean values for YOLO-v3 */
     float mean[3] = {0.0f, 0.0f, 0.0f};
-
-    int height = dpuGetInputTensorHeight(task, INPUT_NODE);
-    int width = dpuGetInputTensorWidth(task, INPUT_NODE);
 
     while (true) {
         pair<int, Mat> pairIndexImage;
@@ -436,7 +497,7 @@ void runYOLO_video(DPUTask* task) {
         mtxQueueInput.lock();
         if (queueInput.empty()) {
             mtxQueueInput.unlock();
-            if(bReading){continue;}else{break;}
+            if(bReading){usleep(10);continue;}else{bInfer[ch]=false;break;}
         } else {
             /* get an input frame from input frames queue */
             pairIndexImage = queueInput.front();
@@ -444,32 +505,44 @@ void runYOLO_video(DPUTask* task) {
             mtxQueueInput.unlock();
         }
         // cout << "Queue size: " << queueInput.size() << endl;
-        // in_pair.push_back(make_pair(pairIndexImage.first, chrono::system_clock::now()));
-        chrono::system_clock::time_point start_pipe, end_pile;
+        chrono::system_clock::time_point start_pipe, end_pipe;
 
-        vector<vector<float>> res;
-        /* feed input frame into DPU Task with mean value */
+        DPUTask* task = dpuCreateTask(kernel, 0);
         start_pipe = chrono::system_clock::now();
         setInputImageForYOLO(task, pairIndexImage.second, mean);
-
-        /* invoke the running of DPU for YOLO-v3 */
-        dpuRunTask(task);
-
-        // testing loop for max load
-        // for(int i=0; i<100; i++){
-        //     dpuRunTask(task);
-        // }
-
-        postProcess(task, pairIndexImage.second, width, height);
-        // out_pair.push_back(make_pair(pairIndexImage.first, chrono::system_clock::now()));
-        end_pile = chrono::system_clock::now();
-        cout << pairIndexImage.first << " ";
-        cout << ((duration<double>)(end_pile-start_pipe)).count() << "s" << endl;
+        end_pipe = chrono::system_clock::now();
+        cout << "res: " << pairIndexImage.first << " " << ((duration<double>)(end_pipe-start_pipe)).count() << "s" << endl;
+        in_pair.push_back(make_pair(pairIndexImage.first,start_pipe));
 
         /* push the image into display frame queue */
-        mtxQueueShow.lock();
-        queueShow.push(pairIndexImage);
-        mtxQueueShow.unlock();
+        mtxResize[ch].lock();
+        queueResize[ch].push(make_pair(pairIndexImage.first, task));
+        mtxResize[ch].unlock();
+    }
+}
+
+void yolo_p2(int ch) {
+    while (true) {
+        taskPair pairIndexTask;
+        mtxResize[ch].lock();
+        if (queueResize[ch].empty()) {
+            mtxResize[ch].unlock();
+            if(bInfer[ch]){usleep(10);continue;}else{break;}
+        } else {
+            /* get an input frame from input frames queue */
+            pairIndexTask = queueResize[ch].front();
+            queueResize[ch].pop();
+            mtxResize[ch].unlock();
+        }
+
+        chrono::system_clock::time_point start_pipe, end_pipe;
+        start_pipe = chrono::system_clock::now();
+        dpuRunTask(pairIndexTask.second);
+        postProcess(pairIndexTask.second);
+        end_pipe = chrono::system_clock::now();
+        cout << "inf: " << pairIndexTask.first << " " << ((duration<double>)(end_pipe-start_pipe)).count() << "s" << endl;
+        out_pair.push_back(make_pair(pairIndexTask.first,end_pipe));
+        dpuDestroyTask(pairIndexTask.second);
     }
 }
 
@@ -500,12 +573,12 @@ int main(const int argc, const char** argv) {
         dpuOpen();
 
         /* Load DPU Kernels for YOLO-v3 network model */
-        DPUKernel *kernel = dpuLoadKernel("yolo");
+        kernel = dpuLoadKernel("yolo");
 
         /* Create n DPU Tasks for YOLO-v3 network model */
-        vector<DPUTask *> task(NUM_YOLO_THREAD);
-        generate(task.begin(), task.end(),
-        std::bind(dpuCreateTask, kernel, 0));
+        // vector<DPUTask *> task(NUM_YOLO_THREAD);
+        // generate(task.begin(), task.end(),
+        // std::bind(dpuCreateTask, kernel, 0));
 
         /* Spawn n+2 threads:
         - 1 thread for reading video frame
@@ -515,30 +588,31 @@ int main(const int argc, const char** argv) {
         array<thread, (NUM_YOLO_THREAD+2)> threadsList = {
             thread(readFrame, argv[1]),
             thread(displayFrame),
-            thread(runYOLO_video, task[0]),
-            // thread(runYOLO_video, task[1]),
-            // thread(runYOLO_video, task[2]),
-            // thread(runYOLO_video, task[3]),
-            // thread(runYOLO_video, task[4]),
-            // thread(runYOLO_video, task[5]),
-            // thread(runYOLO_video, task[6]),
-            // thread(runYOLO_video, task[7]),
-            // thread(runYOLO_video, task[8]),
-            // thread(runYOLO_video, task[9]),
-            // thread(runYOLO_video, task[10]),
-            // thread(runYOLO_video, task[11]),
-            // thread(runYOLO_video, task[12]),
-            // thread(runYOLO_video, task[13]),
-            // thread(runYOLO_video, task[14]),
-            // thread(runYOLO_video, task[15]),
+            // thread(runYOLO_video, task[0]),
+            #ifdef DPU_0
+            thread(yolo_p1,0),
+            thread(yolo_p2,0),
+            #endif
+            #ifdef DPU_1
+            thread(yolo_p1,1),
+            thread(yolo_p2,1),
+            #endif
+            #ifdef DPU_2
+            thread(yolo_p1,2),
+	        thread(yolo_p2,2),
+            #endif
         };
 
         for (int i = 0; i < NUM_YOLO_THREAD+2; i++) {
             threadsList[i].join();
         }
 
+        end_time = chrono::system_clock::now();
+        auto dura = (duration_cast<microseconds>(end_time - start_time)).count();
+        cout << "tol:" << dura << endl;
+
         /* Destroy DPU Tasks & free resources */
-        for_each(task.begin(), task.end(), dpuDestroyTask);
+        // for_each(task.begin(), task.end(), dpuDestroyTask);
 
         /* Destroy DPU Kernels & free resources */
         dpuDestroyKernel(kernel);
@@ -546,21 +620,21 @@ int main(const int argc, const char** argv) {
         /* Dettach from DPU driver & free resources */
         dpuClose();
 
-        // cout << "Calculating latency results..." << endl;
-        // sort(in_pair.begin(), in_pair.end(), tpaircomp);
-        // sort(out_pair.begin(), out_pair.end(), tpaircomp);
-        // vector<timePair>::const_iterator in_it(in_pair.begin());
-        // vector<timePair>::const_iterator in_ed(in_pair.end());
-        // vector<timePair>::const_iterator out_it(out_pair.begin());
-        // vector<timePair>::const_iterator out_ed(out_pair.end());
-        // if(in_pair.size()!=out_pair.size()){
-        //     cout << "vector size not match!!" << endl;
-        // }
-        // while(in_it!=in_ed){
-        //     cout << in_it->first << " " << out_it->first << " ";
-        //     cout << ((duration<double>)(out_it->second-in_it->second)).count() << "s" << endl;
-        //     ++in_it;++out_it;
-        // }
+        cout << "Calculating latency results..." << endl;
+        sort(in_pair.begin(), in_pair.end(), tpaircomp);
+        sort(out_pair.begin(), out_pair.end(), tpaircomp);
+        vector<timePair>::const_iterator in_it(in_pair.begin());
+        vector<timePair>::const_iterator in_ed(in_pair.end());
+        vector<timePair>::const_iterator out_it(out_pair.begin());
+        vector<timePair>::const_iterator out_ed(out_pair.end());
+        if(in_pair.size()!=out_pair.size()){
+            cout << "vector size not match!!" << endl;
+        }
+        while(in_it!=in_ed){
+            cout << in_it->first << " " << out_it->first << " ";
+            cout << ((duration<double>)(out_it->second-in_it->second)).count() << "s" << endl;
+            ++in_it;++out_it;
+        }
         
         return 0;
 
