@@ -86,15 +86,6 @@ int idxInputImage = 0;  // frame index of input video
 int idxShowImage = 0;   // next frame index to be displayed
 bool bReading = true;   // flag of reding input frame
 
-// Performance Metrics
-chrono::system_clock::time_point start_time,end_time;
-typedef pair<int, chrono::system_clock::time_point> timePair;
-vector<timePair> in_pair;
-vector<timePair> out_pair;
-bool tpaircomp (const timePair &n1, const timePair &n2) {
-    return (n1.first > n2.first);
-}
-
 typedef pair<int, Mat> imagePair;
 class paircomp {
     public:
@@ -115,6 +106,15 @@ mutex mtxQueueShow;
 queue<pair<int, Mat>> queueInput;
 // display frames queue
 priority_queue<imagePair, vector<imagePair>, paircomp> queueShow;
+
+// Performance Metrics
+chrono::system_clock::time_point start_time,end_time;
+typedef pair<int, chrono::system_clock::time_point> timePair;
+vector<timePair> in_pair, out_pair;
+vector<timePair> mid_pair;
+bool tpaircomp (const timePair &n1, const timePair &n2) {
+    return (n1.first < n2.first);
+}
 
 typedef pair<int, DPUTask*> taskPair;
 mutex mtxResize[NUM_YOLO_THREAD];
@@ -527,8 +527,9 @@ void yolo_p1(int ch) {
         start_pipe = chrono::system_clock::now();
         setInputImageForYOLO(task, pairIndexImage.second, mean);
         end_pipe = chrono::system_clock::now();
-        cout << "res: " << pairIndexImage.first << " " << ((duration<double>)(end_pipe-start_pipe)).count() << "s" << endl;
+        // cout << "res: " << pairIndexImage.first << " " << ((duration<double>)(end_pipe-start_pipe)).count() << "s" << endl;
         in_pair.push_back(make_pair(pairIndexImage.first,start_pipe));
+        mid_pair.push_back(make_pair(pairIndexImage.first,end_pipe));
 
         /* push the image into display frame queue */
         mtxResize[ch].lock();
@@ -556,7 +557,7 @@ void yolo_p2(int ch) {
         dpuRunTask(pairIndexTask.second);
         postProcess(pairIndexTask.second);
         end_pipe = chrono::system_clock::now();
-        cout << "inf: " << pairIndexTask.first << " " << ((duration<double>)(end_pipe-start_pipe)).count() << "s" << endl;
+        // cout << "inf: " << pairIndexTask.first << " " << ((duration<double>)(end_pipe-start_pipe)).count() << "s" << endl;
         out_pair.push_back(make_pair(pairIndexTask.first,end_pipe));
 
         // recycle task struct
@@ -654,17 +655,22 @@ int main(const int argc, const char** argv) {
         cout << "Calculating latency results..." << endl;
         sort(in_pair.begin(), in_pair.end(), tpaircomp);
         sort(out_pair.begin(), out_pair.end(), tpaircomp);
+        sort(mid_pair.begin(), mid_pair.end(), tpaircomp);
         vector<timePair>::const_iterator in_it(in_pair.begin());
         vector<timePair>::const_iterator in_ed(in_pair.end());
         vector<timePair>::const_iterator out_it(out_pair.begin());
         vector<timePair>::const_iterator out_ed(out_pair.end());
+        vector<timePair>::const_iterator mid_it(mid_pair.begin());
+        vector<timePair>::const_iterator mid_ed(mid_pair.begin());
         if(in_pair.size()!=out_pair.size()){
             cout << "vector size not match!!" << endl;
         }
         while(in_it!=in_ed){
             cout << in_it->first << " " << out_it->first << " ";
+            cout << ((duration<double>)(mid_it->second-in_it->second)).count() << "s" << " ";
+            cout << ((duration<double>)(out_it->second-mid_it->second)).count() << "s" << " ";
             cout << ((duration<double>)(out_it->second-in_it->second)).count() << "s" << endl;
-            ++in_it;++out_it;
+            ++in_it;++out_it;++mid_it;
         }
         
         return 0;
